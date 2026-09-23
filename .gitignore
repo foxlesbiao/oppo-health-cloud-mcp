@@ -1,0 +1,6 @@
+auth.json
+cookies.json
+sign_samples.json
+*.db
+__pycache__/
+*.log
