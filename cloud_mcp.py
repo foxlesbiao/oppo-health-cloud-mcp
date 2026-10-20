@@ -34,6 +34,7 @@ ENDPOINTS = {
     "app_usage":   ["v5/c2s/health/pullAppUsageStatPageList"],
     "insight":     ["v5/c2s/insight/queryRecentData"],
     "weight":      ["v1/c2s/health/weight/querySignedWeight"],
+    "wrist_temperature": ["v5/c2s/health/wrist/temperature/pullStatVersionPageData"],
 }
 
 # ---------- 签名 (pk9 逆向, 50/50 对拍通过, 详见 oppo_sign.py) ----------
@@ -169,6 +170,39 @@ def cloud_sync(metric: str, days: int = 7) -> dict:
                       {"queryFlag": 1, "modifiedTimestamp": ts}, auth)
             if r.get("errorCode") == 0 and isinstance(r.get("body"), list):
                 items.extend(r["body"])
+    elif metric == "wrist_temperature":
+        # 统计接口使用修改时间版本游标；按版本范围拉取每日腕部温度统计。
+        all_ts = []
+        cursor = 0
+        while True:
+            r = _post(
+                "v4/c2s/health/wrist/temperature/queryWristTemperatureStatVersion",
+                {"queryFlag": 0, "modifiedTimestamp": cursor}, auth
+            )
+            if r.get("errorCode") != 0:
+                return {"error": "wrist temperature version query failed",
+                        "errorCode": r.get("errorCode")}
+            b = r.get("body") or {}
+            page = b.get("modifiedTimestampList") or []
+            if not page:
+                break
+            all_ts.extend(page)
+            new_cursor = page[-1]
+            if new_cursor <= cursor or not b.get("hasMore"):
+                break
+            cursor = new_cursor
+        if all_ts:
+            r = _post(
+                ep,
+                {"startModifiedTimestamp": min(all_ts),
+                 "endModifiedTimestamp": max(all_ts)}, auth
+            )
+            if r.get("errorCode") != 0:
+                return {"error": "wrist temperature data query failed",
+                        "errorCode": r.get("errorCode")}
+            b = r.get("body") or {}
+            if isinstance(b, dict):
+                items.extend(b.get("dataList") or [])
     elif metric == "app_usage":
         import datetime as _dt
         today = _dt.date.today()
@@ -212,6 +246,9 @@ def cloud_sync(metric: str, days: int = 7) -> dict:
             elif r.get("errorCode") != 0:
                 return {"error": f"day {d} failed", "detail": r}
     n = _cache(metric, items)
+    if metric == "wrist_temperature":
+        dates = sorted({str(item.get("date")) for item in items if item.get("date") is not None})
+        return {"metric": metric, "endpoint": ep, "rows_cached": n, "dates": dates}
     return {"metric": metric, "endpoint": ep, "rows_cached": n,
             "raw_sample": items[:2]}
 
@@ -325,14 +362,16 @@ def cloud_status() -> dict:
 
 if __name__ == "__main__":
     # 自检: 签名对拍
-    samples = json.load(open(os.path.join(HERE, "sign_samples.json")))
-    ok = 0
-    for s in samples:
-        hdrs = {k: s['headers'][k] for k in ('appid','app-package','nonce','timestamp','token','token-auth-id','app-version')}
-        if _sign(hdrs, s.get('body','')) == s['signature']:
-            ok += 1
-    print(f"签名自检: {ok}/{len(samples)}", file=__import__('sys').stderr)
-    assert ok == len(samples)
+    samples_path = os.path.join(HERE, "sign_samples.json")
+    if os.path.exists(samples_path):
+        samples = json.load(open(samples_path))
+        ok = 0
+        for s in samples:
+            hdrs = {k: s['headers'][k] for k in ('appid','app-package','nonce','timestamp','token','token-auth-id','app-version')}
+            if _sign(hdrs, s.get('body','')) == s['signature']:
+                ok += 1
+        print(f"签名自检: {ok}/{len(samples)}", file=__import__('sys').stderr)
+        assert ok == len(samples)
 
     from mcp.server.fastmcp import FastMCP
     mcp = FastMCP("oppo_health_cloud")

@@ -25,10 +25,12 @@ httpSecret = XXTEA解密(BuildConfig.httpSecret常量, 两个UUID逐字符交错
    ```
 3. 注册 MCP (stdio)：`python3 cloud_mcp.py`
 4. 工具：
-   - `cloud_sync(metric, days)` — 云端拉取 → 本地 SQLite 缓存
+   - `cloud_sync(metric, days)` — 云端拉取 → 本地 SQLite 缓存，支持 `heart_rate`、`blood_oxygen`、`steps`、`sleep`、`weight`、`wrist_temperature` 等指标
    - `cloud_query(metric, date)` — 查缓存
    - `cloud_analyze(days)` — 周期环比 + 异常标记
    - `cloud_status` — 自检
+
+`wrist_temperature` 返回腕部温度统计。数值表示相对个人基线的变化，不是体温计测得的绝对体温。
 
 ## 踩坑记录（重要）
 
