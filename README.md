@@ -18,10 +18,7 @@ httpSecret = XXTEA解密(BuildConfig.httpSecret常量, 两个UUID逐字符交错
 
 ## 使用
 
-1. 抓包一次拿三件套（mitmproxy 挂手机，开健康 App 同步）：
-   - `token` 头（`ACCESS_` 开头）
-   - `token-auth-id` 头
-   - `ssoid`（virtual-ssoid / userTagId）
+1. 按[国内版 OPPO 健康认证手册](OPPO健康国内版云端MCP认证手册.md)获取三件套。已验证流程从应用私有账号文件读取 `token` 和 `token-auth-id`，再通过只读云端请求获取 `ssoid`，不需要 HTTPS 中间人抓包。
 2. 写入同目录 `auth.json`（勿提交）：
    ```json
    {"token": "ACCESS_...", "token_auth_id": "...", "ssoid": "..."}
