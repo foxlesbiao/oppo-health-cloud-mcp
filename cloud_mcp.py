@@ -35,7 +35,33 @@ ENDPOINTS = {
     "insight":     ["v5/c2s/insight/queryRecentData"],
     "weight":      ["v1/c2s/health/weight/querySignedWeight"],
     "wrist_temperature": ["v5/c2s/health/wrist/temperature/pullStatVersionPageData"],
+    "hrv": ["v5/c2s/health/heartRateVar/pullHeartRateVarDetailData"],
+    "stress_detail": ["v5/c2s/health/stress/queryStressDetailData"],
+    "stress_stat": ["v5/c2s/health/stress/pullStatVersionPageData"],
+    "breath_rate": ["v5/c2s/health/breathRate/pullBreathRateDetailData"],
+    "physical_mental_detail": ["v5/c2s/health/physical/mental/queryPhysicalMentalHealthDetailData"],
+    "physical_mental_stat": ["v5/c2s/health/physical/mental/pullStatVersionPageData"],
+    "physical_mental_achievement": ["v5/c2s/health/physical/mental/pullAchievementVersionPageData"],
 }
+
+METRIC_DATASETS = {
+    "stress": ("stress_detail", "stress_stat"),
+    "physical_mental": ("physical_mental_detail", "physical_mental_stat",
+                        "physical_mental_achievement"),
+}
+
+VERSIONED_DETAILS = {
+    "stress_detail": "v2/c2s/health/stress/queryStressDetailVersion",
+    "physical_mental_detail": "v4/c2s/health/physical/mental/queryPhysicalMentalHealthDetailVersion",
+}
+
+VERSIONED_STATS = {
+    "stress_stat": "v2/c2s/health/stress/queryStressStatVersion",
+    "physical_mental_stat": "v4/c2s/health/physical/mental/queryPhysicalMentalHealthStatVersionList",
+    "physical_mental_achievement": "v4/c2s/health/physical/mental/queryPhysicalMentalHealthAchievementVersionList",
+}
+
+BEIJING = datetime.timezone(datetime.timedelta(hours=8), "Asia/Shanghai")
 
 # ---------- 签名 (pk9 逆向, 50/50 对拍通过, 详见 oppo_sign.py) ----------
 _DYN = "e4f5d127-d57d-4d97-a1e7-e762a13f8793"
@@ -134,22 +160,213 @@ def _cache(metric: str, items: list) -> int:
     for it in items:
         d = str(it.get("date") or it.get("dataCreatedTimestamp") or it.get("startTimestamp")
                 or it.get("measurementTime") or it.get("modifiedTimestamp") or now)
+        payload = dict(it)
+        payload.pop("__cacheKey", None)
+        d = str(it.get("__cacheKey") or d)
         con.execute("INSERT OR REPLACE INTO cloud_data VALUES(?,?,?,?)",
-                    (metric, d, json.dumps(it), now))
+                    (metric, d, json.dumps(payload), now))
         n += 1
     con.commit(); con.close()
     return n
+
+def _api_ok(response):
+    return response.get("errorCode") in (0, "0")
+
+def _records(body):
+    """Convert common cloud response shapes to top-level records without flattening nested dataList."""
+    if isinstance(body, list):
+        return body
+    if isinstance(body, dict):
+        for key in ("dataList", "recordList", "detailList", "list"):
+            rows = body.get(key)
+            if isinstance(rows, list):
+                return rows
+        return [body] if body else []
+    return []
+
+def _version_values(body):
+    if not isinstance(body, dict):
+        return []
+    values = body.get("modifiedTimestampList")
+    if isinstance(values, list):
+        return [int(value) for value in values if value is not None]
+    return [int(row["modifiedTimestamp"]) for row in _records(body)
+            if isinstance(row, dict) and row.get("modifiedTimestamp") is not None]
+
+def _fetch_versions(path, auth, query_flag=None, since=0):
+    values = []
+    cursor = since
+    for _ in range(100):
+        request = {"modifiedTimestamp": cursor}
+        if query_flag is not None:
+            request["queryFlag"] = query_flag
+        response = _post(path, request, auth)
+        if not _api_ok(response):
+            return None, response.get("errorCode")
+        body = response.get("body") or {}
+        page = _version_values(body)
+        if not page:
+            break
+        values.extend(page)
+        next_cursor = max(page)
+        if next_cursor <= cursor or not isinstance(body, dict) or not body.get("hasMore"):
+            break
+        cursor = next_cursor
+    else:
+        return None, "pagination_limit"
+    return sorted(set(values)), None
+
+def _first_day_timestamp(days):
+    today = datetime.datetime.now(BEIJING).date()
+    first_day = today - datetime.timedelta(days=max(days, 1) - 1)
+    return _beijing_day_window(first_day)[0]
+
+def _fetch_versioned_details(metric, auth, days):
+    versions, error = _fetch_versions(VERSIONED_DETAILS[metric], auth, query_flag=0,
+                                      since=_first_day_timestamp(days))
+    if error is not None:
+        return None, error
+    items = []
+    for modified_ts in versions:
+        response = _post(ENDPOINTS[metric][0],
+                         {"queryFlag": 1, "modifiedTimestamp": modified_ts}, auth)
+        if not _api_ok(response):
+            return None, response.get("errorCode")
+        items.extend(_records(response.get("body")))
+    return items, None
+
+def _fetch_versioned_stats(metric, auth, days):
+    versions, error = _fetch_versions(VERSIONED_STATS[metric], auth, query_flag=0,
+                                      since=_first_day_timestamp(days))
+    if error is not None:
+        return None, error
+    if not versions:
+        return [], None
+
+    items = []
+    start = min(versions)
+    end = max(versions)
+    endpoint = ENDPOINTS[metric][0]
+    zero_cursor = False
+    for _ in range(100):
+        if not zero_cursor and start > end:
+            break
+        request = {"queryFlag": 0, "startModifiedTimestamp": start,
+                   "endModifiedTimestamp": 0 if zero_cursor else end}
+        response = _post(endpoint, request, auth)
+        if not _api_ok(response):
+            if not zero_cursor:
+                # Some stat APIs only accept the service's zero/zero page cursor.
+                zero_cursor = True
+                start = 0
+                items.clear()
+                continue
+            return None, response.get("errorCode")
+        body = response.get("body") or {}
+        page = _records(body)
+        items.extend(page)
+        if not isinstance(body, dict) or not body.get("hasMore") or not page:
+            break
+        page_versions = [int(row["modifiedTimestamp"]) for row in page
+                         if isinstance(row, dict) and row.get("modifiedTimestamp") is not None]
+        if not page_versions:
+            break
+        next_start = max(page_versions) + 1
+        if next_start <= start:
+            break
+        start = next_start
+    else:
+        return None, "pagination_limit"
+    return items, None
+
+def _beijing_day_window(day):
+    start = datetime.datetime.combine(day, datetime.time.min, tzinfo=BEIJING)
+    end = start + datetime.timedelta(days=1) - datetime.timedelta(milliseconds=1)
+    return int(start.timestamp() * 1000), int(end.timestamp() * 1000)
+
+def _payload_date(item):
+    for key in ("date", "dataCreatedTimestamp", "startTimestamp", "measurementTime", "timestamp"):
+        value = item.get(key)
+        if value is None:
+            continue
+        if key == "date":
+            value = str(value)
+            if len(value) == 8 and value.isdigit():
+                return f"{value[:4]}-{value[4:6]}-{value[6:8]}"
+            if len(value) == 10 and value[4] == "-":
+                return value
+        try:
+            timestamp = int(value)
+            if timestamp < 100000000000:
+                timestamp *= 1000
+            return datetime.datetime.fromtimestamp(timestamp / 1000, BEIJING).date().isoformat()
+        except (TypeError, ValueError, OSError, OverflowError):
+            continue
+    return None
+
+def _recent_items(items, days):
+    today = datetime.datetime.now(BEIJING).date()
+    first_day = today - datetime.timedelta(days=max(days, 1) - 1)
+    result = []
+    for item in items:
+        day = _payload_date(item)
+        if day is None or day >= first_day.isoformat():
+            result.append(item)
+    return result
+
+def _embedded_metric_items(metric, outer_items):
+    source_key, value_key = {
+        "hrv": ("hrv", "heartRateVarValue"),
+        "stress_detail": ("stress", "stressValue"),
+    }[metric]
+    result = []
+    for outer_index, outer in enumerate(outer_items):
+        if not isinstance(outer, dict):
+            continue
+        for index, point in enumerate(outer.get("dataList") or []):
+            if not isinstance(point, dict):
+                continue
+            value = point.get(source_key)
+            if value is None:
+                continue
+            row = {
+                value_key: value,
+                "startTimestamp": outer.get("startTimestamp"),
+                "endTimestamp": outer.get("endTimestamp"),
+                "modifiedTimestamp": outer.get("modifiedTimestamp"),
+                "startTimeOffset": point.get("startTimeOffset"),
+                "source": "physical_mental_detail",
+            }
+            if metric == "stress_detail":
+                row.update({"stressState": point.get("stressState"),
+                            "stressType": point.get("type"),
+                            "display": point.get("display")})
+            else:
+                row["display"] = point.get("display")
+            row["__cacheKey"] = (f"{metric}:{outer.get('startTimestamp')}:"
+                                  f"{outer.get('modifiedTimestamp')}:{outer_index}:{index}")
+            result.append(row)
+    return result
 
 def cloud_sync(metric: str, days: int = 7) -> dict:
     """从云端拉取指定指标, 写入本地缓存.
     pull端点限制单次范围≤1天(23103), 内部按天循环.
     sleep: version游标全量(单条1请求, 仅增量ts); app_usage: date+queryFlag; weight: userTagId+pageSize."""
+    if metric in METRIC_DATASETS:
+        results = [cloud_sync(dataset, days) for dataset in METRIC_DATASETS[metric]]
+        errors = [result for result in results if result.get("error")]
+        result = {"metric": metric, "datasets": results}
+        if errors:
+            result["errors"] = errors
+        return result
+
     auth = _load_auth()
     eps = ENDPOINTS.get(metric)
     if not eps:
         return {"error": f"unknown metric {metric}, 可用: {list(ENDPOINTS)}"}
     ep = eps[0]
     items = []
+    derived_from = None
     if metric == "sleep":
         # version 游标向前翻页(queryFlag0+cursor, 每300条/hasMore), 再逐ts拉记录
         all_ts = []
@@ -203,6 +420,42 @@ def cloud_sync(metric: str, days: int = 7) -> dict:
             b = r.get("body") or {}
             if isinstance(b, dict):
                 items.extend(b.get("dataList") or [])
+    elif metric in ("hrv", "breath_rate"):
+        # These pull APIs accept at most one Beijing calendar day per request.
+        today = datetime.datetime.now(BEIJING).date()
+        for back in range(max(days, 1)):
+            day = today - datetime.timedelta(days=back)
+            start, end = _beijing_day_window(day)
+            response = _post(ep, {"startTimestamp": start, "endTimestamp": end}, auth)
+            if not _api_ok(response):
+                return {"error": f"{metric} day pull failed", "errorCode": response.get("errorCode")}
+            items.extend(_records(response.get("body")))
+        if metric == "hrv" and not items:
+            source_items, error = _fetch_versioned_details("physical_mental_detail", auth, days)
+            if error is None:
+                source_items = _recent_items(source_items, days)
+                _cache("physical_mental_detail", source_items)
+                items = _embedded_metric_items("hrv", source_items)
+                if items:
+                    derived_from = "physical_mental_detail"
+    elif metric in VERSIONED_DETAILS:
+        items, error = _fetch_versioned_details(metric, auth, days)
+        if error is not None:
+            return {"error": f"{metric} detail query failed", "errorCode": error}
+        items = _recent_items(items, days)
+        if metric == "stress_detail" and not items:
+            source_items, error = _fetch_versioned_details("physical_mental_detail", auth, days)
+            if error is None:
+                source_items = _recent_items(source_items, days)
+                _cache("physical_mental_detail", source_items)
+                items = _embedded_metric_items("stress_detail", source_items)
+                if items:
+                    derived_from = "physical_mental_detail"
+    elif metric in VERSIONED_STATS:
+        items, error = _fetch_versioned_stats(metric, auth, days)
+        if error is not None:
+            return {"error": f"{metric} statistics query failed", "errorCode": error}
+        items = _recent_items(items, days)
     elif metric == "app_usage":
         import datetime as _dt
         today = _dt.date.today()
@@ -246,24 +499,45 @@ def cloud_sync(metric: str, days: int = 7) -> dict:
             elif r.get("errorCode") != 0:
                 return {"error": f"day {d} failed", "detail": r}
     n = _cache(metric, items)
-    if metric == "wrist_temperature":
-        dates = sorted({str(item.get("date")) for item in items if item.get("date") is not None})
-        return {"metric": metric, "endpoint": ep, "rows_cached": n, "dates": dates}
+    if metric == "wrist_temperature" or metric in {
+            "hrv", "stress_detail", "stress_stat", "breath_rate",
+            "physical_mental_detail", "physical_mental_stat", "physical_mental_achievement"}:
+        dates = sorted({day for item in items if (day := _payload_date(item)) is not None})
+        result = {"metric": metric, "endpoint": ep, "rows_cached": n, "dates": dates}
+        if derived_from:
+            result["derived_from"] = derived_from
+        return result
     return {"metric": metric, "endpoint": ep, "rows_cached": n,
             "raw_sample": items[:2]}
 
 def cloud_query(metric: str, date: str = None) -> dict:
     """查询本地缓存 (先 sync 再 query). date=YYYYMMDD 可选."""
+    if metric in METRIC_DATASETS:
+        datasets = {name: cloud_query(name, date)
+                    for name in METRIC_DATASETS[metric]}
+        return {"metric": metric,
+                "count": sum(dataset["count"] for dataset in datasets.values()),
+                "datasets": datasets}
+
     con = _db()
     if date:
-        rows = con.execute("SELECT payload FROM cloud_data WHERE metric=? AND date=?",
-                           (metric, date)).fetchall()
+        requested = date.replace("-", "")
+        requested_iso = (f"{requested[:4]}-{requested[4:6]}-{requested[6:8]}"
+                         if len(requested) == 8 and requested.isdigit() else requested)
+        rows = con.execute("SELECT date, payload FROM cloud_data WHERE metric=?",
+                           (metric,)).fetchall()
+        data = []
+        for cached_date, payload in rows:
+            item = json.loads(payload)
+            if (str(cached_date).replace("-", "") == requested
+                    or _payload_date(item) == requested_iso):
+                data.append(item)
     else:
         rows = con.execute("SELECT date, payload FROM cloud_data WHERE metric=? ORDER BY date DESC LIMIT 100",
                            (metric,)).fetchall()
+        data = [json.loads(r[1]) for r in rows]
     con.close()
-    return {"metric": metric, "count": len(rows),
-            "data": [json.loads(r[0] if len(r) == 1 else r[1]) for r in rows]}
+    return {"metric": metric, "count": len(data), "data": data}
 
 _KCAL = 1000  # steps.calories 原始值单位为毫千卡, /1000 = kcal
 
