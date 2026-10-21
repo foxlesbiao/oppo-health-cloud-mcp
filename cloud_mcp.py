@@ -10,7 +10,7 @@
    }
    token 过期后重抓一次即可。签名密钥内嵌, 无需其他配置。
 2. 注册 MCP (stdio): <python> cloud_mcp.py
-3. 工具: cloud_sync(拉明细), cloud_query(查本地缓存), cloud_status(自检)
+3. 工具: cloud_sync(拉明细并写缓存), cloud_query(查缓存), cloud_analyze(周期分析), cloud_status(自检)
 """
 import base64, datetime, hashlib, hmac, json, os, sqlite3, struct, time, urllib.request, urllib.error
 from typing import Literal
