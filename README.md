@@ -55,6 +55,31 @@ python3 oppo_login.py login
 
 `token`、`token_auth_id` 和 `ssoid` 必须来自同一个账号。不要提交或粘贴这个文件。
 
+### 设备 ID 与多账号
+
+登录器默认为每次登录生成随机 OpenSDK device ID 和 DUID source ID，不再复用上一次登录保存的设备 ID。需要固定设备身份时，可用参数或环境变量显式指定：
+
+```bash
+python3 oppo_login.py login \
+  --device-id 0123456789abcdef0123456789abcdef \
+  --sdk-device-id fedcba9876543210fedcba9876543210
+```
+
+等价环境变量：
+
+```bash
+export OPPO_HEALTH_DEVICE_ID=0123456789abcdef0123456789abcdef
+export OPPO_HEALTH_SDK_DEVICE_ID=fedcba9876543210fedcba9876543210
+```
+
+不要在多个账号之间共用同一组设备 ID。多账号本机隔离时，可为每个账号设置独立的认证和缓存文件：
+
+```bash
+export OPPO_HEALTH_AUTH_FILE=/secure/path/account-a-auth.json
+export OPPO_HEALTH_CACHE_DB=/secure/path/account-a-cache.db
+```
+
+
 ### 2. 注册 MCP server
 
 `cloud_mcp.py` 使用 stdio 传输。在 MCP 客户端中把它配置为本机 Python 启动：

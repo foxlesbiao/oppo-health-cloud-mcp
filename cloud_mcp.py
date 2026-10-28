@@ -16,8 +16,12 @@ import base64, datetime, hashlib, hmac, json, os, sqlite3, struct, time, urllib.
 from typing import Literal
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-AUTH_FILE = os.path.join(HERE, "auth.json")
-CACHE_DB = os.path.join(HERE, "cloud_cache.db")
+AUTH_FILE = os.path.abspath(
+    os.environ.get("OPPO_HEALTH_AUTH_FILE") or os.path.join(HERE, "auth.json")
+)
+CACHE_DB = os.path.abspath(
+    os.environ.get("OPPO_HEALTH_CACHE_DB") or os.path.join(HERE, "cloud_cache.db")
+)
 HOST = "https://sport.health.heytapmobi.com/sporthealth/"
 
 APPID = "M2QfBThPRpGcGovBva3ENX"

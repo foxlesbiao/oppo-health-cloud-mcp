@@ -24,7 +24,9 @@ from Crypto.PublicKey import RSA
 from Crypto.Util import Counter
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-AUTH_FILE = os.path.join(HERE, "auth.json")
+AUTH_FILE = os.path.abspath(
+    os.environ.get("OPPO_HEALTH_AUTH_FILE") or os.path.join(HERE, "auth.json")
+)
 
 UC_HOST = "https://uc-client-cn.heytapmobi.com"
 VERIFY_HOST = "https://uc-client-cn.heytapmobi.com"
@@ -180,6 +182,10 @@ def _device_duid(device_id: str | None) -> str:
             else "0" * 32
         )
     return f"{HEALTH_PACKAGE}{suffix}"
+
+
+def _device_id_from_env(name: str) -> str:
+    return os.environ.get(name, "").strip()
 
 
 def _sdk_headers(plain_body: str, kind: str, native: bool = False) -> dict[str, str]:
@@ -571,13 +577,19 @@ def _load_auth() -> dict[str, Any]:
         return json.load(handle)
 
 
-def run_login(device_id: str | None = None) -> None:
-    auth = _load_auth()
-    sdk_device_id = auth.get("sdk_device_id") or secrets.token_hex(16)
-    login_device_id = device_id or sdk_device_id
+def run_login(device_id: str | None = None, sdk_device_id: str | None = None) -> None:
+    device_id = device_id or _device_id_from_env("OPPO_HEALTH_DEVICE_ID") or secrets.token_hex(16)
+    sdk_device_id = (
+        sdk_device_id
+        or _device_id_from_env("OPPO_HEALTH_SDK_DEVICE_ID")
+        or device_id
+    )
+    parent = os.path.dirname(AUTH_FILE)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
     _write_auth({"sdk_device_id": sdk_device_id})
     sdk = AccountLoginSession(
-        login_device_id,
+        device_id,
         sdk_device_id,
     )
     phone = getpass.getpass("Phone number: ").strip()
@@ -588,7 +600,7 @@ def run_login(device_id: str | None = None) -> None:
     sdk.validate_code(code)
     account_token = sdk.login()
     health = sdk.authorize_health_token(account_token)
-    token_auth_id = health["token_auth_id"] or auth.get("token_auth_id") or ""
+    token_auth_id = health["token_auth_id"]
     if not token_auth_id:
         raise RuntimeError("no token-auth-id/device-id available")
     ssoid = _health_login(health["token"], token_auth_id)
@@ -605,14 +617,18 @@ def run_login(device_id: str | None = None) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="OPPO Health account login")
     parser.add_argument("command", choices=["config", "login"])
-    parser.add_argument("--device-id", help="OpenSDK deviceId; defaults to a random persisted ID")
+    parser.add_argument("--device-id", help="OpenSDK deviceId; defaults to a random per-login ID")
+    parser.add_argument(
+        "--sdk-device-id",
+        help="DUID source ID; defaults to --device-id or OPPO_HEALTH_SDK_DEVICE_ID",
+    )
     args = parser.parse_args()
     try:
         if args.command == "config":
             session = AccountLoginSession(args.device_id or _load_auth().get("token_auth_id") or "")
             print(json.dumps(session.config(), ensure_ascii=False, separators=(",", ":")))
         else:
-            run_login(args.device_id)
+            run_login(args.device_id, args.sdk_device_id)
         return 0
     except KeyboardInterrupt:
         print("Cancelled.", file=sys.stderr)
