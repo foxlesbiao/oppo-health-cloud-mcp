@@ -23,8 +23,8 @@ HOST = "https://sport.health.heytapmobi.com/sporthealth/"
 APPID = "M2QfBThPRpGcGovBva3ENX"
 APP_PACKAGE = "com.heytap.health"
 APP_KEY_VERSION = "1732499446015"
-APP_VERSION = "6091900"
-VERSION_NAME = "6.9.19_b95456c_260918"
+APP_VERSION = "6093700"
+VERSION_NAME = "6.9.37_a7d98c1_260920"
 
 ENDPOINTS = {
     "heart_rate":  ["v5/c2s/health/heartRate/pullHeartRateDetailData"],

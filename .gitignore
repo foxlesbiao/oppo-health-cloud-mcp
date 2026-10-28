@@ -1,5 +1,6 @@
 auth.json
 cookies.json
+auth.json.tmp
 sign_samples.json
 *.db
 __pycache__/

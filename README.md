@@ -30,6 +30,25 @@ httpSecret = XXTEA解密(BuildConfig.httpSecret常量, 两个UUID逐字符交错
    - `cloud_analyze(days)` — 周期环比 + 异常标记
    - `cloud_status` — 自检
 
+### 账号登录（实验性）
+
+`oppo_login.py` 复刻欢太账号嵌入式 OpenSDK 的 RSA-OAEP + AES-CTR 信封与 HMAC 签名，支持：
+
+```bash
+python3 oppo_login.py config
+python3 oppo_login.py login
+```
+
+`login` 会隐藏输入手机号和验证码；如果服务端触发二次认证，会继续提示身份证后 6 位。成功后通过
+`authorization/v1/token/authorize` 换取 health 包级 token，再调用健康云账号登录写入 `auth.json`。
+手机号、验证码、身份证后 6 位和 token 均不会回显或打印；账号刷新 token 不会落盘，`auth.json` 使用 `0600` 权限保存。
+
+运行前需要：
+
+```bash
+python3 -m pip install requests pycryptodome
+```
+
 `cloud_sync` 和 `cloud_query` 的 `metric` 参数在 MCP schema 中提供完整枚举，共 67 项：65 个独立指标和 2 个组合指标（`stress`、`physical_mental`）。`cloud_sync` 会写入本地缓存；`cloud_query`、`cloud_analyze`、`cloud_status` 标记为只读。
 
 `wrist_temperature` 返回腕部温度统计。数值表示相对个人基线的变化，不是体温计测得的绝对体温。
