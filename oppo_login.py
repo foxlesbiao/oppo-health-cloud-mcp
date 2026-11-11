@@ -363,13 +363,22 @@ class AccountLoginSession:
         self.ticket = str(data.get("ticket") or "")
         if data.get("verificationUrl"):
             self._verify_engine(data["verificationUrl"])
+        else:
+            # some accounts require secondary verification even without a
+            # verificationUrl (e.g. verMethodList=["PASSWORD"]); probing the
+            # verify engine directly is harmless when none is configured
+            self._verify_engine(None)
         if not self.ticket:
             raise RuntimeError("validation did not return ticket")
 
-    def _verify_engine(self, verification_url: str) -> None:
-        query = parse_qs(urlparse(verification_url).query)
-        process_token = (query.get("processToken") or [self.process_token])[0]
-        scene_id = (query.get("sceneId") or [MOBILE_CODE_LOGIN_SCENE])[0]
+    def _verify_engine(self, verification_url: str | None = None) -> None:
+        if verification_url:
+            query = parse_qs(urlparse(verification_url).query)
+            process_token = (query.get("processToken") or [self.process_token])[0]
+            scene_id = (query.get("sceneId") or [MOBILE_CODE_LOGIN_SCENE])[0]
+        else:
+            process_token = self.process_token
+            scene_id = MOBILE_CODE_LOGIN_SCENE
         env_info = json.dumps(
             {
                 "sceneId": scene_id,
@@ -404,16 +413,26 @@ class AccountLoginSession:
         )
         methods = (list_result.get("data") or {}).get("verMethodList") or []
         if not methods:
-            raise RuntimeError("secondary verification list is empty")
-        selected = next((item for item in methods if item.get("verMethod") == "SUFFIX_ID_NUMBER"), methods[0])
+            if verification_url:
+                raise RuntimeError("secondary verification list is empty")
+            return False
+        selected = next(
+            (item for item in methods if item.get("verMethod") in ("SUFFIX_ID_NUMBER", "PASSWORD")),
+            None,
+        )
+        if selected is None:
+            raise RuntimeError(f"unsupported secondary verification methods: {[m.get('verMethod') for m in methods]}")
         method = selected.get("verMethod")
-        if method != "SUFFIX_ID_NUMBER":
+        if method == "SUFFIX_ID_NUMBER":
+            validate_data = getpass.getpass("ID number last 6 chars: ")
+        elif method == "PASSWORD":
+            validate_data = getpass.getpass("Account password: ")
+        else:
             raise RuntimeError(f"unsupported secondary verification method: {method}")
-        suffix = getpass.getpass("ID number last 6 chars: ")
         result = _sdk_post(
             self.session,
             f"{VERIFY_HOST}/api/verification/validate-data",
-            {"verMethod": method, "validateData": suffix, "processToken": process_token},
+            {"verMethod": method, "validateData": validate_data, "processToken": process_token},
             "verify-validate",
         )
         data = _assert_ok(result, "secondary verification")
